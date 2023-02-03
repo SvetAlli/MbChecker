@@ -4,7 +4,11 @@ import fetch from 'node-fetch';
 
 
 const WANTED_RATIO = 2;
-const WANTED_MINIMUM_NET_GAIN = 50000;
+const WANTED_MINIMUM_NET_GAIN = 100000;
+const AT_LEAST_X_SALES = 3;
+const IN_THE_LAST_X_DAYS = 3; // max = 30
+
+const MS_IN_A_DAY = 86400000
 
 const worlds = new Map();
 worlds.set(33, 'Twintania');
@@ -23,9 +27,9 @@ const ws = new WebSocket(addr);
 
 
 const getInfoFromAlpha = async (item, hq) => {
-    const response = await fetch(`https://universalis.app/api/v2/402/${item}?hq=${hq}`);
+    const response = await fetch(`https://universalis.app/api/v2/402/${item}?hq=${hq}&entries=30`);
     const json = await response.json();
-    return json.listings[0]?.pricePerUnit;
+    return json;
 }
 
 const getInfoFromLight = async (item, hq) => {
@@ -42,16 +46,29 @@ ws.on('open', () => {
   console.log('Connection opened.');
 });
 
+const getNumberOfSalesInTheLastXDays = (recentHistory, hq) => {
+    const filteredWithDates = recentHistory
+    .filter(history => history.hq == hq)
+    .filter(history => {
+        return history.timestamp * 1000 > Date.now() - (MS_IN_A_DAY * IN_THE_LAST_X_DAYS);
+    });
+
+    const averagePrice = filteredWithDates.map(history => history.pricePerUnit).reduce((a, b) => a + b, 0) / filteredWithDates.length;
+    return { number: filteredWithDates.length, averagePrice }
+};
+
 ws.on('close', () => console.log('Connection closed.'));
 
 ws.on('message', async data => {
     const message = deserialize(data);
     const [listing, ...rest] = message.listings;
     const { item, world } = message;
-    const alphaPrice = await getInfoFromAlpha(item, listing.hq);
+    const alphaInfos = await getInfoFromAlpha(item, listing.hq);
+    const alphaPrice = alphaInfos.listings[0]?.pricePerUnit
     const ratio =  alphaPrice / listing.pricePerUnit;
     const theoricalNetGain = alphaPrice * listing.quantity - listing.pricePerUnit * listing.quantity
-    if(ratio > WANTED_RATIO & theoricalNetGain > WANTED_MINIMUM_NET_GAIN) {
+    const sales = getNumberOfSalesInTheLastXDays(alphaInfos.recentHistory, listing.hq);
+    if(ratio > WANTED_RATIO && theoricalNetGain > WANTED_MINIMUM_NET_GAIN && sales.number >= AT_LEAST_X_SALES) {
         const newInfo = await getInfoFromLight(item, listing.hq);
         const newRatio =  alphaPrice / newInfo.pricePerUnit;
         const newTheoricalNetGain = alphaPrice * newInfo.quantity - newInfo.pricePerUnit * newInfo.quantity
@@ -66,7 +83,10 @@ ws.on('message', async data => {
                 totalPrice: newInfo.pricePerUnit * newInfo.quantity,
                 alphaPrice,
                 ratio: newRatio.toFixed(2),
-                theoricalNetGain: newTheoricalNetGain
+                theoricalNetGain: newTheoricalNetGain,
+                numberOfSales: sales.number,
+                averagePriceOfSales: sales.averagePrice.toFixed(0),
+                inLastXDays: IN_THE_LAST_X_DAYS
             });
     }
 });
